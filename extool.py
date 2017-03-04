@@ -10,10 +10,14 @@ from dateutil import parser
 
 
 def slugify(string):
-    return string.strip().replace(' ', '-') if string is not None else 'noEXIF'
+    """makes the camera name OS friendly"""
+    return (string
+            .strip()
+            .replace(' ', '-') if string else 'noEXIF')
 
 
 def get_model(exif):
+    """gets camera model"""
     ret = None
     tags = (
         'EXIF:Model',
@@ -28,6 +32,7 @@ def get_model(exif):
 
 
 def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
+    """returns file date from EXIF, if not available - from filesystem data"""
     ret = None
     tags = (
         'EXIF:DateTimeOriginal',
@@ -41,9 +46,9 @@ def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
         # 2 possible formats:
         # 2016:12:11 13:34:33+13:00
         # 2016:11:06 02:59:05
-        # dttm_str = dttm_str.replace(':', '')
+        dttm_str = dttm_str.replace(':', '/', 2)
         dttm = parser.parse(dttm_str)
-        if dttm is None:
+        if not dttm:
             # unsuccessfull conversion
             raise ValueError(
                 "Error converting following date: {0} in file: {1}"
@@ -54,6 +59,7 @@ def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
 
 
 def get_prefix(exif):
+    """returns the prefix according to the file type"""
     ret = None
     abbreviations = {'image': 'IMG', 'video': 'VID'}
     mime = exif.get('File:MIMEType')
@@ -62,11 +68,12 @@ def get_prefix(exif):
 
 
 def generate_name(exif, retry=0):
+    """Generates a filename according to the mask"""
     ret = None
     prefix = get_prefix(exif)
     ext = exif.get('File:FileTypeExtension')
     if prefix is not None:
-        ret = ('{}_{}{}_{}.{}'
+        ret = ('{0}_{1}{2}_{3}.{4}'
                .format(prefix,
                        get_date(exif),
                        '' if retry == 0 else "-{}".format(retry),
@@ -101,26 +108,20 @@ def rename(file_from, exif):
     return renamed
 
 
-if __name__ == '__main__':
-    # et = exiftool.ExifTool()
-    logging.basicConfig(level=logging.WARNING)
-    logger = logging.getLogger(__name__)
+def process_dir(path):
+    """ runs exiftool against all files in the specified directory
 
-#    logger.setLevel(20)
-
-    if len(sys.argv) < 2:
-        print("Usage: {} <directory>".format(os.path.basename(sys.argv[0])))
-        sys.exit(1)
-
+    :param path: directory root
+    """
     files_list = list()
-    for root, subdirs, files in os.walk(sys.argv[1]):
+    for root, subdirs, files in os.walk(path):
         for file in files:
             files_list.append(os.path.join(root, file))
 
     with exiftool.ExifTool() as et:
         for file in files_list:
             md = et.get_metadata(file)
-            if md.get('ExifTool:Error') is not None:
+            if md.get('ExifTool:Error'):
                 continue
             if (not md.get('File:MIMEType', 'Unknown').startswith('image') and
                     not (md
@@ -131,3 +132,16 @@ if __name__ == '__main__':
                 logger.info("Renamed: {}".format(file))
             else:
                 logger.error("Failed to rename {}".format(file))
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.WARNING)
+    logger = logging.getLogger(__name__)
+
+#    logger.setLevel(20)
+
+    if len(sys.argv) < 2:
+        print("Usage: {0} <directory>".format(os.path.basename(sys.argv[0])))
+        sys.exit(1)
+
+    process_dir(sys.argv[1])
