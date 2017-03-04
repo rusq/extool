@@ -11,16 +11,26 @@ except ImportError:
     import pyexifinfo
 from dateutil import parser
 
+ABBREVIATIONS = {'image': 'IMG', 'video': 'VID'}
+
 
 def slugify(string):
-    """makes the camera name OS friendly"""
+    """makes the camera name OS friendly
+
+    :param str string: camera name from exif
+    :return: sluggified OS friendly name
+    """
     return (string
             .strip()
             .replace(' ', '-') if string else 'noEXIF')
 
 
 def get_model(exif):
-    """gets camera model"""
+    """gets camera model from EXIF
+
+    :param dict exif: EXIF data
+    :return: sluggified model
+    """
     ret = None
     tags = (
         'EXIF:Model',
@@ -35,11 +45,19 @@ def get_model(exif):
 
 
 def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
-    """returns file date from EXIF, if not available - from filesystem data"""
+    """returns file date from EXIF, if not available - from filesystem data
+
+    :param dict exif: EXIF data
+    :param str output_fmt: output format
+
+    :return: date in the specified format
+    :rtype: str
+    """
     ret = None
     tags = (
         'EXIF:DateTimeOriginal',
         'QuickTime:CreationDate',
+        'QuickTime:MediaCreateDate',
         'File:FileModifyDate',
     )
     for tag in tags:
@@ -62,16 +80,23 @@ def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
 
 
 def get_prefix(exif):
-    """returns the prefix according to the file type"""
+    """returns the prefix according to the file type from EXIF
+    :param dict exif: EXIF data
+    :return: file type prefix
+    """
     ret = None
-    abbreviations = {'image': 'IMG', 'video': 'VID'}
     mime = exif.get('File:MIMEType')
-    ret = abbreviations.get(mime.split('/')[0]) if mime is not None else None
+    ret = ABBREVIATIONS.get(mime.split('/')[0]) if mime else None
     return ret
 
 
 def generate_name(exif, retry=0):
-    """Generates a filename according to the mask"""
+    """Generates a filename according to the mask
+    :param dict exif: EXIF data
+
+    :return: file name
+    :rtype: str
+    """
     ret = None
     prefix = get_prefix(exif)
     ext = exif.get('File:FileTypeExtension')
@@ -87,6 +112,14 @@ def generate_name(exif, retry=0):
 
 
 def rename(file_from, exif):
+    """ Rename the file
+
+    :param str file_from: initial file name
+    :param dict exif: EXIF data
+
+    :return: True on success, False on failure
+    :rtype: bool
+    """
     MAX_RENAME = 20
     retry_count = 0
     renamed = False
@@ -111,6 +144,34 @@ def rename(file_from, exif):
     return renamed
 
 
+def _recurse_dir(file_list, exiftool_handle=None):
+    """recurses through directory renaming files
+
+    :param list file_list: list containing full path of files to rename
+    :param handle exiftool_handle: this is exiftool handle, if not specified,
+        it is assumed, that pyexifinfo module is used, and behaviour is changed
+        accordingly
+    """
+    for file in file_list:
+        if exiftool_handle:
+            md = exiftool_handle.get_metadata(file)
+            if md.get('ExifTool:Error'):
+                continue
+        else:
+            try:
+                md = pyexifinfo.get_json(file)[0]
+            except ValueError:
+                continue
+        mime = md.get('File:MIMEType', 'Unknown')
+        if not (mime.startswith('image') or
+                mime.startswith('video')):
+            continue
+        if rename(file, md):
+            logger.info("Renamed: {}".format(file))
+        else:
+            logger.error("Failed to rename {}".format(file))
+
+
 def process_dir(path):
     """ runs exiftool against all files in the specified directory
 
@@ -122,35 +183,9 @@ def process_dir(path):
             files_list.append(os.path.join(root, file))
     if 'exiftool' in sys.modules:
         with exiftool.ExifTool() as et:
-            for file in files_list:
-                md = et.get_metadata(file)
-                if md.get('ExifTool:Error'):
-                    continue
-                if (not md.get('File:MIMEType', 'Unknown').startswith('image') and
-                        not (md
-                             .get('File:MIMEType', 'Unknown')
-                             .startswith('video'))):
-                    continue
-                if rename(file, md):
-                    logger.info("Renamed: {}".format(file))
-                else:
-                    logger.error("Failed to rename {}".format(file))
+            _recurse_dir(files_list, et)
     elif 'pyexifinfo' in sys.modules:
-        for file in files_list:
-            try:
-                md = pyexifinfo.get_json(file)[0]
-            except ValueError:
-                continue
-            if (not md.get('File:MIMEType', 'Unknown').startswith('image') and
-                    not (md
-                         .get('File:MIMEType', 'Unknown')
-                         .startswith('video'))):
-                continue
-            if rename(file, md):
-                logger.info("Renamed: {}".format(file))
-            else:
-                logger.error("Failed to rename {}".format(file))
-
+        _recurse_dir(files_list)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.WARNING)
