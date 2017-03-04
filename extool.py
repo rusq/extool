@@ -5,7 +5,10 @@ import os
 import sys
 import filecmp
 import logging
-import exiftool
+try:
+    import exiftool
+except ImportError:
+    import pyexifinfo
 from dateutil import parser
 
 
@@ -117,11 +120,26 @@ def process_dir(path):
     for root, subdirs, files in os.walk(path):
         for file in files:
             files_list.append(os.path.join(root, file))
-
-    with exiftool.ExifTool() as et:
+    if 'exiftool' in sys.modules:
+        with exiftool.ExifTool() as et:
+            for file in files_list:
+                md = et.get_metadata(file)
+                if md.get('ExifTool:Error'):
+                    continue
+                if (not md.get('File:MIMEType', 'Unknown').startswith('image') and
+                        not (md
+                             .get('File:MIMEType', 'Unknown')
+                             .startswith('video'))):
+                    continue
+                if rename(file, md):
+                    logger.info("Renamed: {}".format(file))
+                else:
+                    logger.error("Failed to rename {}".format(file))
+    elif 'pyexifinfo' in sys.modules:
         for file in files_list:
-            md = et.get_metadata(file)
-            if md.get('ExifTool:Error'):
+            try:
+                md = pyexifinfo.get_json(file)[0]
+            except ValueError:
                 continue
             if (not md.get('File:MIMEType', 'Unknown').startswith('image') and
                     not (md
