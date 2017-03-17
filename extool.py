@@ -5,6 +5,7 @@ import os
 import sys
 import filecmp
 import logging
+
 try:
     import exiftool
 except ImportError:
@@ -62,18 +63,22 @@ def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
     )
     for tag in tags:
         dttm_str = exif.get(tag)
-        if not dttm_str:
+        if not dttm_str or dttm_str.startswith('0000'):
             continue
         # 2 possible formats:
         # 2016:12:11 13:34:33+13:00
         # 2016:11:06 02:59:05
         dttm_str = dttm_str.replace(':', '/', 2)
-        dttm = parser.parse(dttm_str)
+        try:
+            dttm = parser.parse(dttm_str)
+        except:
+            sys.stderr.write("Failed on {0}\n".format(dttm_str))
+            raise
         if not dttm:
             # unsuccessfull conversion
             raise ValueError(
                 "Error converting following date: {0} in file: {1}"
-                .format(dttm_str, exif.get('File:FileName')))
+                    .format(dttm_str, exif.get('File:FileName')))
         ret = dttm.strftime(output_fmt)
         break
     return ret
@@ -164,7 +169,7 @@ def _recurse_dir(file_list, exiftool_handle=None):
                 continue
         mime = md.get('File:MIMEType', 'Unknown')
         if not (mime.startswith('image') or
-                mime.startswith('video')):
+                    mime.startswith('video')):
             continue
         if rename(file, md):
             logger.info("Renamed: {}".format(file))
@@ -187,11 +192,12 @@ def process_dir(path):
     elif 'pyexifinfo' in sys.modules:
         _recurse_dir(files_list)
 
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.WARNING)
     logger = logging.getLogger(__name__)
 
-#    logger.setLevel(20)
+    #    logger.setLevel(20)
 
     if len(sys.argv) < 2:
         print("Usage: {0} <directory>".format(os.path.basename(sys.argv[0])))
