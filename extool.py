@@ -35,19 +35,84 @@
 
 
 """
-import os
-import sys
 import filecmp
 import logging
+import os
+import sys
+from Queue import Queue
+from threading import Lock, Thread
+
+from dateutil import parser
 
 try:
     import exiftool
     fast_exif = True
 except ImportError:
     import pyexifinfo
-from dateutil import parser
+    fast_exif = False
 
 ABBREVIATIONS = {'image': 'IMG', 'video': 'VID'}
+MAX_THREADS = 4
+
+
+class ClosableQueue(Queue):
+    SENTINEL = object()
+
+    def close(self):
+        self.put(self.SENTINEL)
+
+    def __iter__(self):
+        while True:
+            item = self.get()
+            try:
+                if item is self.SENTINEL:
+                    return
+                yield item
+            finally:
+                self.task_done()
+
+
+class Renamer(Thread):
+
+    def __init__(self, file_queue, exception_q,
+                 exiftool_handle, exiftool_lock):
+        super(Renamer, self).__init__()
+        self.file_queue = file_queue
+        self.exiftool_handle = exiftool_handle
+        self.lock = exiftool_lock
+        self.exception_q = exception_q
+
+    def get_metadata(self, filename):
+        if self.exiftool_handle is not None and self.lock is not None:
+            with self.lock:
+                md = self.exiftool_handle.get_metadata(filename)
+                if md.get('ExifTool:Error'):
+                    pass
+        else:
+            try:
+                md = pyexifinfo.get_json(filename)[0]
+            except ValueError:
+                pass
+
+        return md
+
+    def run(self):
+        for filename in self.file_queue:
+            try:
+                self.process_file(filename)
+            except Exception as e:
+                self.exception_q.put(e)
+
+    def process_file(self, filename):
+        md = self.get_metadata(filename)
+        mime = md.get('File:MIMEType', 'Unknown')
+        if not (mime.startswith('image') or
+                mime.startswith('video')):
+            return
+        if rename(filename, md):
+            logger.info("Renamed: {}".format(filename))
+        else:
+            logger.error("Failed to rename {}".format(filename))
 
 
 def slugify(string):
@@ -184,58 +249,59 @@ def rename(file_from, exif):
     return renamed
 
 
-def _recurse_dir(file_list, exiftool_handle=None):
-    """recurses through directory renaming files
-
-    :param list file_list: list containing full path of files to rename
-    :param handle exiftool_handle: this is exiftool handle, if not specified,
-        it is assumed, that pyexifinfo module is used, and behaviour is changed
-        accordingly
-    """
-    for file in file_list:
-        if exiftool_handle:
-            md = exiftool_handle.get_metadata(file)
-            if md.get('ExifTool:Error'):
-                continue
-        else:
-            try:
-                md = pyexifinfo.get_json(file)[0]
-            except ValueError:
-                continue
-        mime = md.get('File:MIMEType', 'Unknown')
-        if not (mime.startswith('image') or
-                mime.startswith('video')):
-            continue
-        if rename(file, md):
-            logger.info("Renamed: {}".format(file))
-        else:
-            logger.error("Failed to rename {}".format(file))
-
-
-def process_dir(path):
-    """ runs exiftool against all files in the specified directory
-
-    :param path: directory root
-    """
-    files_list = list()
-    for root, subdirs, files in os.walk(path):
-        for file in files:
-            files_list.append(os.path.join(root, file))
-    if fast_exif:
-        with exiftool.ExifTool() as et:
-            _recurse_dir(files_list, et)
+def get_metadata(filename, exiftool_handle):
+    if exiftool_handle:
+        md = exiftool_handle.get_metadata(filename)
+        if md.get('ExifTool:Error'):
+            pass
     else:
-        _recurse_dir(files_list)
+        try:
+            md = pyexifinfo.get_json(filename)[0]
+        except ValueError:
+            pass
+
+    return md
+
+
+def process_dir(path, exiftool_handle, exiftool_lock):
+    file_queue = ClosableQueue(32)
+    exception_q = Queue()
+
+    threads = [Renamer(file_queue, exception_q,
+                       exiftool_handle, exiftool_lock)
+               for _ in range(0, MAX_THREADS)]
+
+    for thread in threads:
+        thread.start()
+
+    for root, _, files in os.walk(path):
+        for filename in files:
+            file_queue.put(os.path.join(root, filename))
+
+    # each thread will receive the signal.
+    for _ in range(0, MAX_THREADS):
+        file_queue.close()
+
+    file_queue.join()
+
+    if not exception_q.empty():
+        sys.stderr.write("There were errors:\n")
+        while not exception_q.empty():
+            sys.stderr.write("%s\n" % exception_q.get(block=False).message)
 
 
 if __name__ == '__main__':
+
     logging.basicConfig(level=logging.WARNING)
     logger = logging.getLogger(__name__)
-
-    #    logger.setLevel(20)
 
     if len(sys.argv) < 2:
         print("Usage: {0} <directory>".format(os.path.basename(sys.argv[0])))
         sys.exit(1)
 
-    process_dir(sys.argv[1])
+    if fast_exif:
+        with exiftool.ExifTool() as cm:
+            exiftool_lock = Lock()
+            process_dir(sys.argv[1], cm, exiftool_lock)
+    else:
+        process_dir(sys.argv[1], None, None)
