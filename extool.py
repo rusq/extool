@@ -42,6 +42,7 @@ import logging
 
 try:
     import exiftool
+    fast_exif = True
 except ImportError:
     import pyexifinfo
 from dateutil import parser
@@ -105,14 +106,14 @@ def get_date(exif, output_fmt="%Y%m%dT%H%M%S%z"):
         dttm_str = dttm_str.replace(':', '/', 2)
         try:
             dttm = parser.parse(dttm_str)
-        except:
+        except ValueError:
             sys.stderr.write("Failed on {0}\n".format(dttm_str))
             raise
         if not dttm:
             # unsuccessfull conversion
             raise ValueError(
                 "Error converting following date: {0} in file: {1}"
-                    .format(dttm_str, exif.get('File:FileName')))
+                .format(dttm_str, exif.get('File:FileName')))
         ret = dttm.strftime(output_fmt)
         break
     return ret
@@ -178,7 +179,7 @@ def rename(file_from, exif):
             try:
                 os.rename(file_from, file_to)
                 renamed = True
-            except:
+            except OSError:
                 raise
     return renamed
 
@@ -203,7 +204,7 @@ def _recurse_dir(file_list, exiftool_handle=None):
                 continue
         mime = md.get('File:MIMEType', 'Unknown')
         if not (mime.startswith('image') or
-                    mime.startswith('video')):
+                mime.startswith('video')):
             continue
         if rename(file, md):
             logger.info("Renamed: {}".format(file))
@@ -220,10 +221,10 @@ def process_dir(path):
     for root, subdirs, files in os.walk(path):
         for file in files:
             files_list.append(os.path.join(root, file))
-    if 'exiftool' in sys.modules:
+    if fast_exif:
         with exiftool.ExifTool() as et:
             _recurse_dir(files_list, et)
-    elif 'pyexifinfo' in sys.modules:
+    else:
         _recurse_dir(files_list)
 
 
