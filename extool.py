@@ -54,6 +54,7 @@ except ImportError:
 ABBREVIATIONS = {'image': 'IMG', 'video': 'VID'}
 MAX_THREADS = 4
 
+
 class ClosableQueue(Queue):
     SENTINEL = object()
 
@@ -73,11 +74,13 @@ class ClosableQueue(Queue):
 
 class Renamer(Thread):
 
-    def __init__(self, file_queue, exiftool_handle, exiftool_lock):
+    def __init__(self, file_queue, exception_q,
+                 exiftool_handle, exiftool_lock):
         super(Renamer, self).__init__()
         self.file_queue = file_queue
         self.exiftool_handle = exiftool_handle
         self.lock = exiftool_lock
+        self.exception_q = exception_q
 
     def get_metadata(self, filename):
         if self.exiftool_handle is not None and self.lock is not None:
@@ -95,7 +98,10 @@ class Renamer(Thread):
 
     def run(self):
         for filename in self.file_queue:
-            self.process_file(filename)
+            try:
+                self.process_file(filename)
+            except Exception as e:
+                self.exception_q.put(e)
 
     def process_file(self, filename):
         md = self.get_metadata(filename)
@@ -259,8 +265,10 @@ def get_metadata(filename, exiftool_handle):
 
 def process_dir(path, exiftool_handle, exiftool_lock):
     file_queue = ClosableQueue(32)
+    exception_q = Queue()
 
-    threads = [Renamer(file_queue, exiftool_handle, exiftool_lock)
+    threads = [Renamer(file_queue, exception_q,
+                       exiftool_handle, exiftool_lock)
                for _ in range(0, MAX_THREADS)]
 
     for thread in threads:
@@ -275,6 +283,11 @@ def process_dir(path, exiftool_handle, exiftool_lock):
         file_queue.close()
 
     file_queue.join()
+
+    if not exception_q.empty():
+        sys.stderr.write("There were errors:\n")
+        while not exception_q.empty():
+            sys.stderr.write("%s\n" % exception_q.get(block=False).message)
 
 
 if __name__ == '__main__':
