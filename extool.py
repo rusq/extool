@@ -200,7 +200,7 @@ def get_prefix(exif):
     return ret
 
 
-def generate_name(exif, retry=0):
+def generate_name(exif, retry=0, path=None):
     """Generates a filename according to the mask
     :param dict exif: EXIF data
 
@@ -214,7 +214,7 @@ def generate_name(exif, retry=0):
         date = get_date(exif)
         conflict = '' if retry == 0 else "-{}".format(retry)
         model = get_model(exif)
-        live_counterpart = check_for_live(date, conflict, ext)
+        live_counterpart = check_for_live(date, conflict, ext, path)
         if live_counterpart:
             ret = live_counterpart
         else:
@@ -223,7 +223,7 @@ def generate_name(exif, retry=0):
     return ret
 
 
-def check_for_live(date, conflict, ext):
+def check_for_live(date, conflict, ext, path=None):
     """Checks for existence of the live photo counterpart in the same dir.
 
     Should be called from generate_name().
@@ -242,7 +242,7 @@ def check_for_live(date, conflict, ext):
             date = date[:date.index('+')]
         suspect_glob = ("%s_%s%s_*.%s"
                         % (ABBREVIATIONS['image'], date, conflict, 'JPG'))
-        suspects = glob.glob(suspect_glob)
+        suspects = glob.glob(os.path.join(path, suspect_glob))
         if not suspects:
             return None
         if len(suspects) > 1:
@@ -266,7 +266,9 @@ def rename(file_from, exif, max_rename=20):
     this_logger = logging.getLogger(__name__)
     while not renamed:
         file_to = os.path.join(os.path.dirname(file_from),
-                               generate_name(exif, retry_count))
+                               generate_name(exif,
+                                             retry_count,
+                                             os.path.dirname(file_from)))
         if os.path.exists(file_to):
             if filecmp.cmp(file_from, file_to):
                 renamed = True
@@ -279,8 +281,8 @@ def rename(file_from, exif, max_rename=20):
             try:
                 os.rename(file_from, file_to)
                 renamed = True
-            except OSError:
-                raise
+            except OSError as e:
+                renamed = True
     return renamed
 
 
@@ -322,7 +324,9 @@ def process_dir(path, exiftool_handle, exiftool_lock):
     if not exception_q.empty():
         sys.stderr.write("There were errors:\n")
         while not exception_q.empty():
-            sys.stderr.write("%s\n" % exception_q.get(block=False).message)
+            message = exception_q.get(block=False).message
+            if message:
+                sys.stderr.write("%s\n" % message)
 
 
 if __name__ == '__main__':
