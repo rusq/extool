@@ -36,6 +36,7 @@
 
 """
 import filecmp
+import glob
 import logging
 import os
 import sys
@@ -73,6 +74,7 @@ class ClosableQueue(Queue):
 
 
 class Renamer(Thread):
+    """Renamer thread class"""
 
     def __init__(self, file_queue, exception_q,
                  exiftool_handle, exiftool_lock):
@@ -83,20 +85,22 @@ class Renamer(Thread):
         self.exception_q = exception_q
 
     def get_metadata(self, filename):
+        """Gets the metadata from filename, returns dict"""
         if self.exiftool_handle is not None and self.lock is not None:
             with self.lock:
-                md = self.exiftool_handle.get_metadata(filename)
-                if md.get('ExifTool:Error'):
+                meta = self.exiftool_handle.get_metadata(filename)
+                if meta.get('ExifTool:Error'):
                     pass
         else:
             try:
-                md = pyexifinfo.get_json(filename)[0]
+                meta = pyexifinfo.get_json(filename)[0]
             except ValueError:
                 pass
 
-        return md
+        return meta
 
     def run(self):
+        """Runner"""
         for filename in self.file_queue:
             try:
                 self.process_file(filename)
@@ -104,15 +108,16 @@ class Renamer(Thread):
                 self.exception_q.put(e)
 
     def process_file(self, filename):
+        """Process a single file"""
         md = self.get_metadata(filename)
         mime = md.get('File:MIMEType', 'Unknown')
         if not (mime.startswith('image') or
                 mime.startswith('video')):
             return
         if rename(filename, md):
-            logger.info("Renamed: {}".format(filename))
+            logger.info("Renamed: %s", filename)
         else:
-            logger.error("Failed to rename {}".format(filename))
+            logger.error("Failed to rename %s", filename)
 
 
 def slugify(string):
@@ -206,17 +211,48 @@ def generate_name(exif, retry=0):
     prefix = get_prefix(exif)
     ext = exif.get('File:FileTypeExtension')
     if prefix is not None:
-        ret = ('{0}_{1}{2}_{3}.{4}'
-               .format(prefix,
-                       get_date(exif),
-                       '' if retry == 0 else "-{}".format(retry),
-                       get_model(exif),
-                       ext)
-               )
+        date = get_date(exif)
+        conflict = '' if retry == 0 else "-{}".format(retry)
+        model = get_model(exif)
+        live_counterpart = check_for_live(date, conflict, ext)
+        if live_counterpart:
+            ret = live_counterpart
+        else:
+            ret = ('{0}_{1}{2}_{3}.{4}'.format(
+                prefix, date, conflict, model, ext))
     return ret
 
 
-def rename(file_from, exif):
+def check_for_live(date, conflict, ext):
+    """Checks for existence of the live photo counterpart in the same dir.
+
+    Should be called from generate_name().
+
+    :param date: date name part
+    :param conflict: conflict name part
+    :param ext: extension
+
+    :return: proper matching filename to rename to if counterpart found,
+        otherwise ``None``.
+    """
+    # TODO Possibly support HEVC/HEIC in the future.
+    if ext == 'MOV':
+        # chop the time zone part
+        if '+' in date:
+            date = date[:date.index('+')]
+        suspect_glob = ("%s_%s%s_*.%s"
+                        % (ABBREVIATIONS['image'], date, conflict, 'JPG'))
+        suspects = glob.glob(suspect_glob)
+        if not suspects:
+            return None
+        if len(suspects) > 1:
+            logging.warning("check_for_live: More than one match: %r",
+                            suspects)
+            return None
+        return os.path.splitext(suspects[0])[0] + "." + ext
+
+
+def rename(file_from, exif, max_rename=20):
     """ Rename the file
 
     :param str file_from: initial file name
@@ -225,19 +261,18 @@ def rename(file_from, exif):
     :return: True on success, False on failure
     :rtype: bool
     """
-    MAX_RENAME = 20
     retry_count = 0
     renamed = False
-    logger = logging.getLogger(__name__)
+    this_logger = logging.getLogger(__name__)
     while not renamed:
         file_to = os.path.join(os.path.dirname(file_from),
                                generate_name(exif, retry_count))
         if os.path.exists(file_to):
             if filecmp.cmp(file_from, file_to):
                 renamed = True
-                logger.warning('File already exists: {}'.format(file_to))
+                this_logger.warning('File already exists: %s', file_to)
             else:
-                if retry_count > MAX_RENAME:
+                if retry_count > max_rename:
                     break
                 retry_count += 1
         else:
